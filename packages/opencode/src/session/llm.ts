@@ -2,7 +2,10 @@ import { Provider } from "@/provider/provider"
 import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
+import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool as aiTool, jsonSchema, asSchema } from "ai"
+import { tool as nativeTool, ToolFailure, type JsonSchema, type LLMEvent } from "@opencode-ai/llm"
+import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+import type { LLMClientService } from "@opencode-ai/llm/route"
 import { mergeDeep } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -16,6 +19,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { Bus } from "@/bus"
+import { errorMessage } from "@/util/error"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
@@ -23,14 +27,17 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { LLMAISDK } from "./llm-ai-sdk"
+import { LLMNative } from "./llm-native"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
-type Result = Awaited<ReturnType<typeof streamText>>
 
 // Avoid re-instantiating remeda's deep merge types in this hot LLM path; the runtime behavior is still mergeDeep.
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
+
+const runtime = () => (process.env.OPENCODE_LLM_RUNTIME === "native" ? "native" : "ai-sdk")
 
 export type StreamInput = {
   user: MessageV2.User
@@ -51,10 +58,8 @@ export type StreamRequest = StreamInput & {
   abort: AbortSignal
 }
 
-export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
-
 export interface Interface {
-  readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
+  readonly stream: (input: StreamInput) => Stream.Stream<LLMEvent, unknown>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
@@ -62,7 +67,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/LL
 const live: Layer.Layer<
   Service,
   never,
-  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service
+  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | LLMClientService
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -71,6 +76,7 @@ const live: Layer.Layer<
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
+    const llmClient = yield* LLMClient.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       const l = log
@@ -213,7 +219,7 @@ const live: Layer.Layer<
         Object.keys(tools).length === 0 &&
         hasToolCalls(input.messages)
       ) {
-        tools["_noop"] = tool({
+        tools["_noop"] = aiTool({
           description: "Do not call this tool. It exists only for API compatibility and must never be invoked.",
           inputSchema: jsonSchema({
             type: "object",
@@ -333,86 +339,119 @@ const live: Layer.Layer<
         ? (yield* InstanceState.context).project.id
         : undefined
 
-      return streamText({
-        onError(error) {
-          l.error("stream error", {
-            error,
-          })
-        },
-        async experimental_repairToolCall(failed) {
-          const lower = failed.toolCall.toolName.toLowerCase()
-          if (lower !== failed.toolCall.toolName && sortedTools[lower]) {
-            l.info("repairing tool call", {
-              tool: failed.toolCall.toolName,
-              repaired: lower,
+      const requestHeaders = {
+        ...(input.model.providerID.startsWith("opencode")
+          ? {
+              ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
+              "x-opencode-session": input.sessionID,
+              "x-opencode-request": input.user.id,
+              "x-opencode-client": Flag.OPENCODE_CLIENT,
+              "User-Agent": `opencode/${InstallationVersion}`,
+            }
+          : {
+              "x-session-affinity": input.sessionID,
+              ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+              "User-Agent": `opencode/${InstallationVersion}`,
+            }),
+        ...input.model.headers,
+        ...headers,
+      }
+
+      if (runtime() === "native") {
+        if (input.model.providerID !== "openai" || input.model.api.npm !== "@ai-sdk/openai") {
+          return yield* Effect.fail(new Error("Native LLM runtime currently only supports OpenAI models"))
+        }
+        const apiKey =
+          info?.type === "api" ? info.key : typeof item.options.apiKey === "string" ? item.options.apiKey : undefined
+        if (!apiKey) return yield* Effect.fail(new Error("Native LLM runtime requires API key auth for OpenAI"))
+        const baseURL = typeof item.options.baseURL === "string" ? item.options.baseURL : undefined
+        const request = LLMNative.request({
+          model: input.model,
+          apiKey,
+          baseURL,
+          system: isOpenaiOauth ? system : [],
+          messages: ProviderTransform.message(messages, input.model, options),
+          toolChoice: input.toolChoice,
+          temperature: params.temperature,
+          topP: params.topP,
+          topK: params.topK,
+          maxOutputTokens: params.maxOutputTokens,
+          providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+          headers: requestHeaders,
+        })
+        return {
+          type: "native" as const,
+          stream: llmClient.stream({ request, tools: nativeTools(sortedTools, input) }),
+        }
+      }
+
+      return {
+        type: "ai-sdk" as const,
+        result: streamText({
+          onError(error) {
+            l.error("stream error", {
+              error,
             })
+          },
+          async experimental_repairToolCall(failed) {
+            const lower = failed.toolCall.toolName.toLowerCase()
+            if (lower !== failed.toolCall.toolName && sortedTools[lower]) {
+              l.info("repairing tool call", {
+                tool: failed.toolCall.toolName,
+                repaired: lower,
+              })
+              return {
+                ...failed.toolCall,
+                toolName: lower,
+              }
+            }
             return {
               ...failed.toolCall,
-              toolName: lower,
-            }
-          }
-          return {
-            ...failed.toolCall,
-            input: JSON.stringify({
-              tool: failed.toolCall.toolName,
-              error: failed.error.message,
-            }),
-            toolName: "invalid",
-          }
-        },
-        temperature: params.temperature,
-        topP: params.topP,
-        topK: params.topK,
-        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-        activeTools: Object.keys(sortedTools).filter((x) => x !== "invalid"),
-        tools: sortedTools,
-        toolChoice: input.toolChoice,
-        maxOutputTokens: params.maxOutputTokens,
-        abortSignal: input.abort,
-        headers: {
-          ...(input.model.providerID.startsWith("opencode")
-            ? {
-                "x-opencode-project": opencodeProjectID,
-                "x-opencode-session": input.sessionID,
-                "x-opencode-request": input.user.id,
-                "x-opencode-client": Flag.OPENCODE_CLIENT,
-                "User-Agent": `opencode/${InstallationVersion}`,
-              }
-            : {
-                "x-session-affinity": input.sessionID,
-                ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-                "User-Agent": `opencode/${InstallationVersion}`,
+              input: JSON.stringify({
+                tool: failed.toolCall.toolName,
+                error: failed.error.message,
               }),
-          ...input.model.headers,
-          ...headers,
-        },
-        maxRetries: input.retries ?? 0,
-        messages,
-        model: wrapLanguageModel({
-          model: language,
-          middleware: [
-            {
-              specificationVersion: "v3" as const,
-              async transformParams(args) {
-                if (args.type === "stream") {
-                  // @ts-expect-error
-                  args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
-                }
-                return args.params
-              },
-            },
-          ],
-        }),
-        experimental_telemetry: {
-          isEnabled: cfg.experimental?.openTelemetry,
-          functionId: "session.llm",
-          tracer: telemetryTracer,
-          metadata: {
-            userId: cfg.username ?? "unknown",
-            sessionId: input.sessionID,
+              toolName: "invalid",
+            }
           },
-        },
-      })
+          temperature: params.temperature,
+          topP: params.topP,
+          topK: params.topK,
+          providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+          activeTools: Object.keys(sortedTools).filter((x) => x !== "invalid"),
+          tools: sortedTools,
+          toolChoice: input.toolChoice,
+          maxOutputTokens: params.maxOutputTokens,
+          abortSignal: input.abort,
+          headers: requestHeaders,
+          maxRetries: input.retries ?? 0,
+          messages,
+          model: wrapLanguageModel({
+            model: language,
+            middleware: [
+              {
+                specificationVersion: "v3" as const,
+                async transformParams(args) {
+                  if (args.type === "stream") {
+                    // @ts-expect-error
+                    args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
+                  }
+                  return args.params
+                },
+              },
+            ],
+          }),
+          experimental_telemetry: {
+            isEnabled: cfg.experimental?.openTelemetry,
+            functionId: "session.llm",
+            tracer: telemetryTracer,
+            metadata: {
+              userId: cfg.username ?? "unknown",
+              sessionId: input.sessionID,
+            },
+          },
+        }),
+      }
     })
 
     const stream: Interface["stream"] = (input) =>
@@ -426,7 +465,15 @@ const live: Layer.Layer<
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            return Stream.fromAsyncIterable(result.fullStream, (e) => (e instanceof Error ? e : new Error(String(e))))
+            if (result.type === "native") return result.stream
+
+            const state = LLMAISDK.adapterState()
+            return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+              e instanceof Error ? e : new Error(String(e)),
+            ).pipe(
+              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+              Stream.flatMap((events) => Stream.fromIterable(events)),
+            )
           }),
         ),
       )
@@ -443,6 +490,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
+    Layer.provide(LLMClient.layer.pipe(Layer.provide(RequestExecutor.defaultLayer))),
   ),
 )
 
@@ -452,6 +500,37 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
+function nativeSchema(value: unknown): JsonSchema {
+  if (!value || typeof value !== "object") return { type: "object", properties: {} }
+  if ("jsonSchema" in value && value.jsonSchema && typeof value.jsonSchema === "object")
+    return value.jsonSchema as JsonSchema
+  return asSchema(value as Parameters<typeof asSchema>[0]).jsonSchema as JsonSchema
+}
+
+function nativeTools(tools: Record<string, Tool>, input: StreamRequest) {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, item]) => [
+      name,
+      nativeTool({
+        description: item.description ?? "",
+        jsonSchema: nativeSchema(item.inputSchema),
+        execute: (args: unknown, ctx?: { readonly id: string; readonly name: string }) =>
+          Effect.tryPromise({
+            try: () => {
+              if (!item.execute) throw new Error(`Tool has no execute handler: ${name}`)
+              return item.execute(args, {
+                toolCallId: ctx?.id ?? name,
+                messages: input.messages,
+                abortSignal: input.abort,
+              })
+            },
+            catch: (error) => new ToolFailure({ message: errorMessage(error) }),
+          }),
+      }),
+    ]),
+  )
 }
 
 // Check if messages contain any tool-call content
