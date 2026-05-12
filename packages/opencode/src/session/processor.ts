@@ -296,7 +296,8 @@ export const layer: Layer.Layer<
         return {
           title: value.name,
           metadata: value.result.type === "json" && isRecord(value.result.value) ? value.result.value : {},
-          output: typeof value.result.value === "string" ? value.result.value : (JSON.stringify(value.result.value) ?? ""),
+          output:
+            typeof value.result.value === "string" ? value.result.value : (JSON.stringify(value.result.value) ?? ""),
         }
       }
 
@@ -715,7 +716,6 @@ export const layer: Layer.Layer<
 
           case "finish":
             return
-
         }
       })
 
