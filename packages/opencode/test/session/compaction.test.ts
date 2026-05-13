@@ -1629,20 +1629,12 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
+      usage: usage({
         inputTokens: 650_000,
         outputTokens: 100_000,
         totalTokens: 750_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: 100_000,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+        cacheReadInputTokens: 100_000,
+      }),
     })
 
     expect(result.tokens.input).toBe(550_000)
@@ -1674,20 +1666,7 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 300_000,
-        outputTokens: 100_000,
-        totalTokens: 400_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 300_000, outputTokens: 100_000, totalTokens: 400_000 }),
     })
 
     expect(result.cost).toBe(0.9 + 0.4)

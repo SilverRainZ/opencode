@@ -11,6 +11,6 @@ This folder contains adapters behind that service boundary:
 Safety boundary:
 
 - AI SDK remains the default.
-- `OPENCODE_LLM_RUNTIME=native` is an opt-in hint, not a global replacement.
+- `OPENCODE_EXPERIMENTAL_NATIVE_LLM=true` is an opt-in hint, not a global replacement. The legacy `OPENCODE_LLM_RUNTIME=native` env var is still accepted by `RuntimeFlags` for local testing.
 - Native execution currently runs only for OpenAI-compatible Responses models exposed through `@ai-sdk/openai`: direct `openai` API-key auth and console-managed `opencode`/Zen API-key config.
 - Unsupported providers, OpenAI OAuth, and missing API-key cases fall back to AI SDK.

@@ -13,6 +13,7 @@ import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Filesystem } from "@/util/filesystem"
 import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import type { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -127,6 +128,7 @@ function recordedNativeLLMLayer(cassette: string, metadata: Record<string, unkno
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(client),
     Layer.provide(cassetteService),
+    Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
   )
 
   return Layer.mergeAll(providerLayer, llmLayer)
@@ -175,22 +177,6 @@ const collect = (input: LLM.StreamInput) =>
     return Array.from(yield* llm.stream(input).pipe(Stream.runCollect))
   })
 
-const nativeRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
-  return Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = process.env.OPENCODE_LLM_RUNTIME
-      process.env.OPENCODE_LLM_RUNTIME = "native"
-      return previous
-    }),
-    () => effect,
-    (previous) =>
-      Effect.sync(() => {
-        if (previous === undefined) delete process.env.OPENCODE_LLM_RUNTIME
-        else process.env.OPENCODE_LLM_RUNTIME = previous
-      }),
-  )
-}
-
 describe("session.llm native recorded", () => {
   recordedOpenAIInstance("uses real RequestExecutor with HTTP recorder for native OpenAI tools", () =>
     Effect.gen(function* () {
@@ -210,34 +196,32 @@ describe("session.llm native recorded", () => {
       const resolved = yield* getModel(ProviderID.openai, ModelID.make(model.id))
       let executed: unknown
 
-      const events = yield* nativeRuntime(
-        collect({
-          user: {
-            id: MessageID.make("msg_user-recorded-native-tool"),
-            sessionID,
-            role: "user",
-            time: { created: 0 },
-            agent: agent.name,
-            model: { providerID: ProviderID.make("openai"), modelID: ModelID.make(model.id) },
-          } satisfies MessageV2.User,
+      const events = yield* collect({
+        user: {
+          id: MessageID.make("msg_user-recorded-native-tool"),
           sessionID,
-          model: resolved,
-          agent,
-          system: ["You must call the lookup tool exactly once with query weather. Do not answer in text."],
-          messages: [{ role: "user", content: "Use lookup." }],
-          toolChoice: "required",
-          tools: {
-            lookup: tool({
-              description: "Lookup data.",
-              inputSchema: z.object({ query: z.string() }),
-              execute: async (args, options) => {
-                executed = { args, toolCallId: options.toolCallId }
-                return { output: "looked up" }
-              },
-            }),
-          },
-        }),
-      )
+          role: "user",
+          time: { created: 0 },
+          agent: agent.name,
+          model: { providerID: ProviderID.make("openai"), modelID: ModelID.make(model.id) },
+        } satisfies MessageV2.User,
+        sessionID,
+        model: resolved,
+        agent,
+        system: ["You must call the lookup tool exactly once with query weather. Do not answer in text."],
+        messages: [{ role: "user", content: "Use lookup." }],
+        toolChoice: "required",
+        tools: {
+          lookup: tool({
+            description: "Lookup data.",
+            inputSchema: z.object({ query: z.string() }),
+            execute: async (args, options) => {
+              executed = { args, toolCallId: options.toolCallId }
+              return { output: "looked up" }
+            },
+          }),
+        },
+      })
 
       expect(events.filter((event) => event.type === "step-finish")).toHaveLength(1)
       expect(events.filter((event) => event.type === "finish")).toHaveLength(1)
@@ -263,34 +247,32 @@ describe("session.llm native recorded", () => {
       const resolved = yield* getModel(ProviderID.opencode, ModelID.make(model.id))
       let executed: unknown
 
-      const events = yield* nativeRuntime(
-        collect({
-          user: {
-            id: MessageID.make("msg_user-recorded-native-zen-tool"),
-            sessionID,
-            role: "user",
-            time: { created: 0 },
-            agent: agent.name,
-            model: { providerID: ProviderID.opencode, modelID: ModelID.make(model.id) },
-          } satisfies MessageV2.User,
+      const events = yield* collect({
+        user: {
+          id: MessageID.make("msg_user-recorded-native-zen-tool"),
           sessionID,
-          model: resolved,
-          agent,
-          system: ["You must call the lookup tool exactly once with query weather. Do not answer in text."],
-          messages: [{ role: "user", content: "Use lookup." }],
-          toolChoice: "required",
-          tools: {
-            lookup: tool({
-              description: "Lookup data.",
-              inputSchema: z.object({ query: z.string() }),
-              execute: async (args, options) => {
-                executed = { args, toolCallId: options.toolCallId }
-                return { output: "looked up" }
-              },
-            }),
-          },
-        }),
-      )
+          role: "user",
+          time: { created: 0 },
+          agent: agent.name,
+          model: { providerID: ProviderID.opencode, modelID: ModelID.make(model.id) },
+        } satisfies MessageV2.User,
+        sessionID,
+        model: resolved,
+        agent,
+        system: ["You must call the lookup tool exactly once with query weather. Do not answer in text."],
+        messages: [{ role: "user", content: "Use lookup." }],
+        toolChoice: "required",
+        tools: {
+          lookup: tool({
+            description: "Lookup data.",
+            inputSchema: z.object({ query: z.string() }),
+            execute: async (args, options) => {
+              executed = { args, toolCallId: options.toolCallId }
+              return { output: "looked up" }
+            },
+          }),
+        },
+      })
 
       expect(events.filter((event) => event.type === "step-finish")).toHaveLength(1)
       expect(events.filter((event) => event.type === "finish")).toHaveLength(1)

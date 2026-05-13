@@ -21,6 +21,7 @@ import type { Agent } from "../../src/agent/agent"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { AppRuntime } from "../../src/effect/app-runtime"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: string): Partial<Config.Info> => {
   const { experimental: _experimental, ...configModel } = model
@@ -66,13 +67,14 @@ async function drainWith(layer: Layer.Layer<LLM.Service>, input: LLM.StreamInput
   )
 }
 
-function llmLayerWithExecutor(executor: Layer.Layer<RequestExecutor.Service>) {
+function llmLayerWithExecutor(executor: Layer.Layer<RequestExecutor.Service>, flags: Partial<RuntimeFlags.Info> = {}) {
   return LLM.layer.pipe(
     Layer.provide(Auth.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(LLMClient.layer.pipe(Layer.provide(executor))),
+    Layer.provide(RuntimeFlags.layer(flags)),
   )
 }
 
@@ -769,39 +771,32 @@ describe("session.llm.stream", () => {
     await WithInstance.provide({
       directory: tmp.path,
       fn: async () => {
-        const previous = process.env.OPENCODE_LLM_RUNTIME
-        process.env.OPENCODE_LLM_RUNTIME = "native"
-        try {
-          const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
-          const sessionID = SessionID.make("session-test-native")
-          const agent = {
-            name: "test",
-            mode: "primary",
-            options: {},
-            permission: [{ permission: "*", pattern: "*", action: "allow" }],
-            temperature: 0.2,
-          } satisfies Agent.Info
+        const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-native")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          temperature: 0.2,
+        } satisfies Agent.Info
 
-          await drain({
-            user: {
-              id: MessageID.make("msg_user-native"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderID.make("openai"), modelID: resolved.id, variant: "high" },
-            } satisfies MessageV2.User,
+        await drainWith(llmLayerWithExecutor(RequestExecutor.defaultLayer, { experimentalNativeLlm: true }), {
+          user: {
+            id: MessageID.make("msg_user-native"),
             sessionID,
-            model: resolved,
-            agent,
-            system: ["You are a helpful assistant."],
-            messages: [{ role: "user", content: "Hello" }],
-            tools: {},
-          })
-        } finally {
-          if (previous === undefined) delete process.env.OPENCODE_LLM_RUNTIME
-          else process.env.OPENCODE_LLM_RUNTIME = previous
-        }
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make("openai"), modelID: resolved.id, variant: "high" },
+          } satisfies MessageV2.User,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
 
         const capture = await request
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
@@ -862,47 +857,40 @@ describe("session.llm.stream", () => {
     await WithInstance.provide({
       directory: tmp.path,
       fn: async () => {
-        const previous = process.env.OPENCODE_LLM_RUNTIME
-        process.env.OPENCODE_LLM_RUNTIME = "native"
-        try {
-          const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
-          const sessionID = SessionID.make("session-test-native-injected-tool")
-          const agent = {
-            name: "test",
-            mode: "primary",
-            options: {},
-            permission: [{ permission: "*", pattern: "*", action: "allow" }],
-          } satisfies Agent.Info
+        const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-native-injected-tool")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
 
-          await drainWith(llmLayerWithExecutor(executor), {
-            user: {
-              id: MessageID.make("msg_user-native-injected-tool"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
-            } satisfies MessageV2.User,
+        await drainWith(llmLayerWithExecutor(executor, { experimentalNativeLlm: true }), {
+          user: {
+            id: MessageID.make("msg_user-native-injected-tool"),
             sessionID,
-            model: resolved,
-            agent,
-            system: [],
-            messages: [{ role: "user", content: "Use lookup" }],
-            tools: {
-              lookup: tool({
-                description: "Lookup data",
-                inputSchema: z.object({ query: z.string() }),
-                execute: async (args, options) => {
-                  executed = { args, toolCallId: options.toolCallId }
-                  return { output: "looked up" }
-                },
-              }),
-            },
-          })
-        } finally {
-          if (previous === undefined) delete process.env.OPENCODE_LLM_RUNTIME
-          else process.env.OPENCODE_LLM_RUNTIME = previous
-        }
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
+          } satisfies MessageV2.User,
+          sessionID,
+          model: resolved,
+          agent,
+          system: [],
+          messages: [{ role: "user", content: "Use lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Lookup data",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async (args, options) => {
+                executed = { args, toolCallId: options.toolCallId }
+                return { output: "looked up" }
+              },
+            }),
+          },
+        })
 
         expect(captured?.model).toBe(model.id)
         expect(captured?.tools).toEqual([
@@ -990,47 +978,40 @@ describe("session.llm.stream", () => {
     await WithInstance.provide({
       directory: tmp.path,
       fn: async () => {
-        const previous = process.env.OPENCODE_LLM_RUNTIME
-        process.env.OPENCODE_LLM_RUNTIME = "native"
-        try {
-          const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
-          const sessionID = SessionID.make("session-test-native-tool")
-          const agent = {
-            name: "test",
-            mode: "primary",
-            options: {},
-            permission: [{ permission: "*", pattern: "*", action: "allow" }],
-          } satisfies Agent.Info
+        const resolved = await getModel(ProviderID.openai, ModelID.make(model.id))
+        const sessionID = SessionID.make("session-test-native-tool")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
 
-          await drain({
-            user: {
-              id: MessageID.make("msg_user-native-tool"),
-              sessionID,
-              role: "user",
-              time: { created: Date.now() },
-              agent: agent.name,
-              model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
-            } satisfies MessageV2.User,
+        await drainWith(llmLayerWithExecutor(RequestExecutor.defaultLayer, { experimentalNativeLlm: true }), {
+          user: {
+            id: MessageID.make("msg_user-native-tool"),
             sessionID,
-            model: resolved,
-            agent,
-            system: [],
-            messages: [{ role: "user", content: "Use lookup" }],
-            tools: {
-              lookup: tool({
-                description: "Lookup data",
-                inputSchema: z.object({ query: z.string() }),
-                execute: async (args, options) => {
-                  executed = { args, toolCallId: options.toolCallId }
-                  return { output: "looked up" }
-                },
-              }),
-            },
-          })
-        } finally {
-          if (previous === undefined) delete process.env.OPENCODE_LLM_RUNTIME
-          else process.env.OPENCODE_LLM_RUNTIME = previous
-        }
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderID.make("openai"), modelID: resolved.id },
+          } satisfies MessageV2.User,
+          sessionID,
+          model: resolved,
+          agent,
+          system: [],
+          messages: [{ role: "user", content: "Use lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Lookup data",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async (args, options) => {
+                executed = { args, toolCallId: options.toolCallId }
+                return { output: "looked up" }
+              },
+            }),
+          },
+        })
 
         const capture = await request
         expect(capture.body.tools).toEqual([
