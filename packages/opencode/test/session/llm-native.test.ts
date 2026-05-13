@@ -3,6 +3,7 @@ import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
 import { jsonSchema, tool, type ModelMessage } from "ai"
 import { Effect } from "effect"
 import { LLMNative } from "@/session/llm-native"
+import { LLMNativeRuntime } from "@/session/llm-native-runtime"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 
@@ -55,6 +56,15 @@ const baseModel: Provider.Model = {
     "x-model": "model-header",
   },
   release_date: "2026-01-01",
+}
+
+const providerInfo: Provider.Info = {
+  id: ProviderID.make("openai"),
+  name: "OpenAI",
+  source: "config",
+  env: ["OPENAI_API_KEY"],
+  options: { apiKey: "test-openai-key" },
+  models: {},
 }
 
 describe("session.llm-native.request", () => {
@@ -232,6 +242,27 @@ describe("session.llm-native.request", () => {
         messages: [],
       }),
     ).toThrow("Native LLM request adapter does not support provider package unknown-provider")
+  })
+
+  test("only enables native runtime for supported OpenAI API-key models", () => {
+    expect(LLMNativeRuntime.status({ model: baseModel, provider: providerInfo, auth: undefined })).toMatchObject({
+      type: "supported",
+      apiKey: "test-openai-key",
+    })
+    expect(
+      LLMNativeRuntime.status({
+        model: { ...baseModel, providerID: ProviderID.make("anthropic") },
+        provider: { ...providerInfo, id: ProviderID.make("anthropic") },
+        auth: undefined,
+      }),
+    ).toEqual({ type: "unsupported", reason: "provider is not openai" })
+    expect(
+      LLMNativeRuntime.status({
+        model: baseModel,
+        provider: providerInfo,
+        auth: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },
+      }),
+    ).toEqual({ type: "unsupported", reason: "OpenAI OAuth is not supported" })
   })
 
   test("compiles through the native OpenAI Responses route", async () => {

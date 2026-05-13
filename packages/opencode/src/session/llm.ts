@@ -2,8 +2,8 @@ import { Provider } from "@/provider/provider"
 import * as Log from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool as aiTool, jsonSchema, asSchema } from "ai"
-import { tool as nativeTool, ToolFailure, type JsonSchema, type LLMEvent } from "@opencode-ai/llm"
+import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool as aiTool, jsonSchema } from "ai"
+import type { LLMEvent } from "@opencode-ai/llm"
 import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
 import { mergeDeep } from "remeda"
@@ -28,7 +28,7 @@ import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm-ai-sdk"
-import { LLMNative } from "./llm-native"
+import { LLMNativeRuntime } from "./llm-native-runtime"
 
 const log = Log.create({ service: "llm" })
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -358,31 +358,31 @@ const live: Layer.Layer<
       }
 
       if (runtime() === "native") {
-        if (input.model.providerID !== "openai" || input.model.api.npm !== "@ai-sdk/openai") {
-          return yield* Effect.fail(new Error("Native LLM runtime currently only supports OpenAI models"))
-        }
-        const apiKey =
-          info?.type === "api" ? info.key : typeof item.options.apiKey === "string" ? item.options.apiKey : undefined
-        if (!apiKey) return yield* Effect.fail(new Error("Native LLM runtime requires API key auth for OpenAI"))
-        const baseURL = typeof item.options.baseURL === "string" ? item.options.baseURL : undefined
-        const request = LLMNative.request({
+        const native = LLMNativeRuntime.stream({
           model: input.model,
-          apiKey,
-          baseURL,
-          system: isOpenaiOauth ? system : [],
-          messages: ProviderTransform.message(messages, input.model, options),
+          provider: item,
+          auth: info,
+          llmClient,
+          isOpenaiOauth,
+          system,
+          messages,
+          tools: sortedTools,
           toolChoice: input.toolChoice,
           temperature: params.temperature,
           topP: params.topP,
           topK: params.topK,
           maxOutputTokens: params.maxOutputTokens,
-          providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+          providerOptions: params.options,
           headers: requestHeaders,
+          abort: input.abort,
         })
-        return {
-          type: "native" as const,
-          stream: llmClient.stream({ request, tools: nativeTools(sortedTools, input) }),
+        if (native.type === "supported") {
+          return {
+            type: "native" as const,
+            stream: native.stream,
+          }
         }
+        l.info("native runtime unavailable; falling back to ai-sdk", { reason: native.reason })
       }
 
       return {
@@ -500,37 +500,6 @@ function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" 
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
-}
-
-function nativeSchema(value: unknown): JsonSchema {
-  if (!value || typeof value !== "object") return { type: "object", properties: {} }
-  if ("jsonSchema" in value && value.jsonSchema && typeof value.jsonSchema === "object")
-    return value.jsonSchema as JsonSchema
-  return asSchema(value as Parameters<typeof asSchema>[0]).jsonSchema as JsonSchema
-}
-
-function nativeTools(tools: Record<string, Tool>, input: StreamRequest) {
-  return Object.fromEntries(
-    Object.entries(tools).map(([name, item]) => [
-      name,
-      nativeTool({
-        description: item.description ?? "",
-        jsonSchema: nativeSchema(item.inputSchema),
-        execute: (args: unknown, ctx?: { readonly id: string; readonly name: string }) =>
-          Effect.tryPromise({
-            try: () => {
-              if (!item.execute) throw new Error(`Tool has no execute handler: ${name}`)
-              return item.execute(args, {
-                toolCallId: ctx?.id ?? name,
-                messages: input.messages,
-                abortSignal: input.abort,
-              })
-            },
-            catch: (error) => new ToolFailure({ message: errorMessage(error) }),
-          }),
-      }),
-    ]),
-  )
 }
 
 // Check if messages contain any tool-call content
