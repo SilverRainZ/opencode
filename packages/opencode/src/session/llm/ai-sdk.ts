@@ -212,13 +212,14 @@ export function toLLMEvents(
 
     case "tool-error":
       return Effect.sync(() => {
-        const name = state.toolNames[event.toolCallId] ?? "unknown"
+        const name = state.toolNames[event.toolCallId] ?? ("toolName" in event ? event.toolName : "unknown")
         delete state.toolNames[event.toolCallId]
         return [
           LLMEvent.toolError({
             id: event.toolCallId,
             name,
             message: errorMessage(event.error),
+            error: event.error,
           }),
         ]
       })

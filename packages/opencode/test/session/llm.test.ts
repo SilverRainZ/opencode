@@ -22,6 +22,8 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Permission } from "@/permission"
+import { LLMAISDK } from "@/session/llm/ai-sdk"
 
 const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: string): Partial<Config.Info> => {
   const { experimental: _experimental, ...configModel } = model
@@ -162,6 +164,30 @@ describe("session.llm.hasToolCalls", () => {
       },
     ] as ModelMessage[]
     expect(LLM.hasToolCalls(messages)).toBe(true)
+  })
+})
+
+describe("session.llm.ai-sdk adapter", () => {
+  test("preserves tool-error cause", async () => {
+    const error = new Permission.RejectedError()
+    const events = await Effect.runPromise(
+      LLMAISDK.toLLMEvents(LLMAISDK.adapterState(), {
+        type: "tool-error",
+        toolCallId: "call_123",
+        toolName: "bash",
+        input: {},
+        error,
+      }),
+    )
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: "tool-error",
+      id: "call_123",
+      name: "bash",
+      message: error.message,
+      error,
+    })
   })
 })
 

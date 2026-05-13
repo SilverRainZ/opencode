@@ -9,7 +9,6 @@ import { Snapshot } from "@/snapshot"
 import * as Session from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
-import { Image } from "@/image/image"
 import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
@@ -95,7 +94,6 @@ export const layer: Layer.Layer<
   | LLM.Service
   | Permission.Service
   | Plugin.Service
-  | Image.Service
   | SessionSummary.Service
   | SessionStatus.Service
   | SyncEvent.Service
@@ -114,7 +112,6 @@ export const layer: Layer.Layer<
     const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
-    const image = yield* Image.Service
     const sync = yield* SyncEvent.Service
     const flags = yield* RuntimeFlags.Service
 
@@ -152,7 +149,7 @@ export const layer: Layer.Layer<
 
       const readToolCall = Effect.fn("SessionProcessor.readToolCall")(function* (toolCallID: string) {
         const call = ctx.toolcalls[toolCallID]
-        if (!call) return
+        if (!call) return undefined
         const part = yield* session.getPart({
           partID: call.partID,
           messageID: call.messageID,
@@ -160,7 +157,7 @@ export const layer: Layer.Layer<
         })
         if (!part || part.type !== "tool") {
           delete ctx.toolcalls[toolCallID]
-          return
+          return undefined
         }
         return { call, part }
       })
@@ -170,7 +167,7 @@ export const layer: Layer.Layer<
         update: (part: MessageV2.ToolPart) => MessageV2.ToolPart,
       ) {
         const match = yield* readToolCall(toolCallID)
-        if (!match) return
+        if (!match) return undefined
         const part = yield* session.updatePart(update(match.part))
         ctx.toolcalls[toolCallID] = {
           ...match.call,
@@ -250,7 +247,20 @@ export const layer: Layer.Layer<
         providerExecuted?: boolean
       }) {
         const existing = yield* readToolCall(input.id)
-        if (existing) return existing
+        if (existing) {
+          if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
+          const part = yield* session.updatePart({
+            ...existing.part,
+            metadata: { ...existing.part.metadata, providerExecuted: true },
+          })
+          ctx.toolcalls[input.id] = {
+            ...existing.call,
+            partID: part.id,
+            messageID: part.messageID,
+            sessionID: part.sessionID,
+          }
+          return { call: ctx.toolcalls[input.id], part }
+        }
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
         if (flags.experimentalEventSystem) {
           yield* sync.run(SessionEvent.Tool.Input.Started.Sync, {
@@ -486,12 +496,6 @@ export const layer: Layer.Layer<
           case "tool-result": {
             const toolCall = yield* readToolCall(value.id)
             const rawOutput = toolResultOutput(value)
-            // temporarily disabled
-            // const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
-            //   attachment.mime.startsWith("image/")
-            //     ? image.normalize(attachment).pipe(Effect.exit)
-            //     : Effect.succeed(Exit.succeed<MessageV2.FilePart>(attachment)),
-            // )
             const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
               Effect.succeed(Exit.succeed<MessageV2.FilePart>(attachment)),
             )
@@ -550,7 +554,7 @@ export const layer: Layer.Layer<
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
             }
-            yield* failToolCall(value.id, new Error(value.message))
+            yield* failToolCall(value.id, value.error ?? new Error(value.message))
             return
           }
 
@@ -901,7 +905,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(LLM.defaultLayer),
     Layer.provide(Permission.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
-    Layer.provide(Image.defaultLayer),
     Layer.provide(SessionSummary.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(SyncEvent.defaultLayer),

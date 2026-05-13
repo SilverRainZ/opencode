@@ -114,7 +114,7 @@ function nativeTools(tools: Record<string, Tool>, input: Pick<StreamInput, "mess
                 abortSignal: input.abort,
               })
             },
-            catch: (error) => new ToolFailure({ message: errorMessage(error) }),
+            catch: (error) => new ToolFailure({ message: errorMessage(error), error }),
           }),
       }),
     ]),
