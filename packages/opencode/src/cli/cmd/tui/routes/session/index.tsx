@@ -87,9 +87,8 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
-import { useCommandPalette } from "../../context/command-palette"
-import { useBindings, useCommandShortcut } from "../../keymap"
 import { PathFormatterProvider, usePathFormatter } from "../../context/path-format"
+import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 
 addDefaultParsers(parsers.parsers)
 
@@ -99,23 +98,6 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT = "go_upsell_account_rate_limit_
 const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_dont_show"
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
-
-function goUpsellKeys(action: SessionRetry.Retryable["action"]) {
-  if (!action) return
-  if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
-  if (action.reason === "free_tier_limit") {
-    return {
-      lastSeenAt: GO_UPSELL_FREE_TIER_LAST_SEEN_AT,
-      dontShow: GO_UPSELL_FREE_TIER_DONT_SHOW,
-    }
-  }
-  if (action.reason === "account_rate_limit") {
-    return {
-      lastSeenAt: GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT,
-      dontShow: GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW,
-    }
-  }
-}
 
 const sessionBindingCommands = [
   "session.share",
@@ -152,6 +134,23 @@ const sessionBindingCommands = [
   "session.child.next",
   "session.child.previous",
 ] as const
+
+function goUpsellKeys(action: SessionRetry.Retryable["action"]) {
+  if (!action) return
+  if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
+  if (action.reason === "free_tier_limit") {
+    return {
+      lastSeenAt: GO_UPSELL_FREE_TIER_LAST_SEEN_AT,
+      dontShow: GO_UPSELL_FREE_TIER_DONT_SHOW,
+    }
+  }
+  if (action.reason === "account_rate_limit") {
+    return {
+      lastSeenAt: GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT,
+      dontShow: GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW,
+    }
+  }
+}
 
 const context = createContext<{
   width: number
@@ -306,7 +305,7 @@ export function Session() {
     seeded = true
     r.set(route.prompt)
   }
-  const command = useCommandPalette()
+  const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()
 
@@ -1047,7 +1046,7 @@ export function Session() {
   }))
 
   useBindings(() => ({
-    enabled: command.matcher,
+    opencodeMode: OPENCODE_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 
@@ -1123,7 +1122,6 @@ export function Session() {
                     <Switch>
                       <Match when={message.id === revert()?.messageID}>
                         {(function () {
-                          const command = useCommandPalette()
                           const redoShortcut = useCommandShortcut("session.redo")
                           const [hover, setHover] = createSignal(false)
                           const dialog = useDialog()
@@ -1132,12 +1130,12 @@ export function Session() {
                             const confirmed = await DialogConfirm.show(
                               dialog,
                               "Confirm Redo",
-                              "Are you sure you want to restore the reverted messages?",
-                            )
-                            if (confirmed) {
-                              command.run("session.redo")
-                            }
+                            "Are you sure you want to restore the reverted messages?",
+                          )
+                          if (confirmed) {
+                            keymap.dispatchCommand("session.redo")
                           }
+                        }
 
                           return (
                             <box
