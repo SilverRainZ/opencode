@@ -185,4 +185,4 @@ export const request = (input: RequestInput) => {
   })
 }
 
-export * as LLMNative from "./llm-native"
+export * as LLMNative from "./native-request"

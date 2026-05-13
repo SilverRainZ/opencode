@@ -7,7 +7,7 @@ import { Effect } from "effect"
 import * as Stream from "effect/Stream"
 import { tool as nativeTool, ToolFailure, type JsonSchema, type LLMEvent } from "@opencode-ai/llm"
 import type { LLMClientShape } from "@opencode-ai/llm/route"
-import { LLMNative } from "./llm-native"
+import { LLMNative } from "./native-request"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -112,4 +112,4 @@ function nativeTools(tools: Record<string, Tool>, input: Pick<StreamInput, "mess
   )
 }
 
-export * as LLMNativeRuntime from "./llm-native-runtime"
+export * as LLMNativeRuntime from "./native-runtime"

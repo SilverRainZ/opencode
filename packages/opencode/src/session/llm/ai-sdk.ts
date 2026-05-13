@@ -231,4 +231,4 @@ export function toLLMEvents(
   }
 }
 
-export * as LLMAISDK from "./llm-ai-sdk"
+export * as LLMAISDK from "./ai-sdk"
