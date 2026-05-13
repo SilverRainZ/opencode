@@ -803,6 +803,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       },
       {
+        name: "app.toggle.auto_accept_edits",
+        title: kv.get("permission_auto_accept", "edit") === "edit" ? "Disable auto-accept edits" : "Enable auto-accept edits",
+        category: "System",
+        run: () => {
+          const current = kv.get("permission_auto_accept", "edit")
+          kv.set("permission_auto_accept", current === "edit" ? "none" : "edit")
+          dialog.clear()
+        },
+      },
+      {
         name: "app.toggle.session_directory_filter",
         title: kv.get("session_directory_filter_enabled", true)
           ? "Disable session directory filtering"

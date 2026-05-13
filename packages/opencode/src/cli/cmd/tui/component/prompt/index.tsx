@@ -202,7 +202,8 @@ export function Prompt(props: PromptProps) {
   const [warpNotice, setWarpNotice] = createSignal<string>()
   const [cursorVersion, setCursorVersion] = createSignal(0)
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
-  const hasRightContent = createMemo(() => Boolean(props.right))
+  const [autoaccept] = kv.signal<"none" | "edit">("permission_auto_accept", "edit")
+  const hasRightContent = createMemo(() => Boolean(props.right) || autoaccept() === "edit")
   const defaultWorkspaceID = createMemo(() => props.workspaceID ?? project.workspace.current())
 
   function selectWorkspace(selection: WorkspaceSelection | undefined) {
@@ -1595,6 +1596,11 @@ export function Prompt(props: PromptProps) {
               </box>
               <Show when={hasRightContent()}>
                 <box flexDirection="row" gap={1} alignItems="center">
+                  <Show when={autoaccept() === "edit"}>
+                    <text>
+                      <span style={{ fg: theme.warning }}>autoedit</span>
+                    </text>
+                  </Show>
                   {props.right}
                 </box>
               </Show>
