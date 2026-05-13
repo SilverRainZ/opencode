@@ -2,6 +2,7 @@ import type { Auth } from "@/auth"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { errorMessage } from "@/util/error"
+import { isRecord } from "@/util/record"
 import { asSchema, type ModelMessage, type Tool } from "ai"
 import { Effect } from "effect"
 import * as Stream from "effect/Stream"
@@ -36,9 +37,10 @@ type StreamInput = {
 }
 
 export function status(input: Pick<StreamInput, "model" | "provider" | "auth">): RuntimeStatus {
-  if (input.model.providerID !== "openai") return { type: "unsupported", reason: "provider is not openai" }
+  if (input.model.providerID !== "openai" && !input.model.providerID.startsWith("opencode"))
+    return { type: "unsupported", reason: "provider is not openai or opencode" }
   if (input.model.api.npm !== "@ai-sdk/openai") return { type: "unsupported", reason: "provider package is not OpenAI" }
-  if (input.auth?.type === "oauth") return { type: "unsupported", reason: "OpenAI OAuth is not supported" }
+  if (input.auth?.type === "oauth") return { type: "unsupported", reason: "OAuth auth is not supported" }
 
   const apiKey =
     input.auth?.type === "api"
@@ -74,11 +76,18 @@ export function stream(input: StreamInput): StreamResult {
         topK: input.topK,
         maxOutputTokens: input.maxOutputTokens,
         providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
-        headers: input.headers,
+        headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
       }),
       tools: nativeTools(input.tools, input),
     }),
   }
+}
+
+function providerHeaders(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  )
 }
 
 function nativeSchema(value: unknown): JsonSchema {

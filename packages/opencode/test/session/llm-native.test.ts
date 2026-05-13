@@ -251,18 +251,28 @@ describe("session.llm-native.request", () => {
     })
     expect(
       LLMNativeRuntime.status({
+        model: { ...baseModel, providerID: ProviderID.make("opencode") },
+        provider: { ...providerInfo, id: ProviderID.make("opencode") },
+        auth: undefined,
+      }),
+    ).toMatchObject({
+      type: "supported",
+      apiKey: "test-openai-key",
+    })
+    expect(
+      LLMNativeRuntime.status({
         model: { ...baseModel, providerID: ProviderID.make("anthropic") },
         provider: { ...providerInfo, id: ProviderID.make("anthropic") },
         auth: undefined,
       }),
-    ).toEqual({ type: "unsupported", reason: "provider is not openai" })
+    ).toEqual({ type: "unsupported", reason: "provider is not openai or opencode" })
     expect(
       LLMNativeRuntime.status({
         model: baseModel,
         provider: providerInfo,
         auth: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },
       }),
-    ).toEqual({ type: "unsupported", reason: "OpenAI OAuth is not supported" })
+    ).toEqual({ type: "unsupported", reason: "OAuth auth is not supported" })
   })
 
   test("compiles through the native OpenAI Responses route", async () => {

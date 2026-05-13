@@ -12,5 +12,5 @@ Safety boundary:
 
 - AI SDK remains the default.
 - `OPENCODE_LLM_RUNTIME=native` is an opt-in hint, not a global replacement.
-- Native execution currently runs only for OpenAI API-key auth via `@ai-sdk/openai`.
+- Native execution currently runs only for OpenAI-compatible Responses models exposed through `@ai-sdk/openai`: direct `openai` API-key auth and console-managed `opencode`/Zen API-key config.
 - Unsupported providers, OpenAI OAuth, and missing API-key cases fall back to AI SDK.
